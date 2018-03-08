@@ -1,0 +1,236 @@
+---
+title: "Weight Lifting Classification Project"
+author: "Cathy Staats"
+date: "March 3, 2018"
+output: html_document
+---
+### Executive Summary
+
+The goal of this analysis is to predict the manner in which the subject did the weight lifting exercise. This is indicated by the classe variable in the data.
+
+I split the data into thee pieces: train/build (65%), test (25%) and validate (10%). I used the training/building data set to train 4 different models: A classification tree, a gradiant boosting model, a random forest model, and a linear discriminant analysis (LDA) model. The testing data was used to select a model. I had originally planned to build a model weighting the four model results. However, in the end I selected the random forest model. I performed a final evaluation of the random forest model using the validation data. The model gave an accuracy on the validation data of over 99%. The downside of the random forest model is that id did take several hours to run.
+
+In the training of the classification tree model, I used 5-fold cross-validation. In the remaining three models, I used the default of 25 bootstrapped samples.
+Prior to the model build, some pre-processing was done including imputation of missing values and eliminating near-zero variance models and highly correlated variables.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r loaddata, echo=FALSE,  cache=TRUE}
+#if(!file.exists("./data")){dir.create("./data")}
+#trainUrl = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+#testurl = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+#download.file(trainUrl,destfile="./data/train.csv",method="wininet")
+#download.file(testurl,destfile="./data/test.csv",method="wininet")
+
+training <- read.csv("./data/train.csv", na.strings=c("","NA","#DIV/0!"), stringsAsFactors=TRUE)
+testing <- read.csv("./data/test.csv", na.strings=c("","NA","#DIV/0!"), stringsAsFactors=TRUE)
+```
+### Splitting Data
+
+* Split data into training (65%), testing (25%) and validation (10%)
+* Training used for selecting predictor variables and training several models
+* Testing data used to select a model.
+  Original plan was to build a model combining the various models. However, after   reviewing the model fits, decided to go with the random forest model.
+* FInally, the validation data will be used to estimate out of sample error.
+
+```{r splitdata,  message=FALSE, warning=FALSE, cache=TRUE}
+set.seed(357)
+library(caret)
+inBuild <- createDataPartition(y=training$classe, p=0.65, list=FALSE)
+## buildData (training)
+rest <- training[-inBuild,] 
+buildData <- training[inBuild,]
+## 0.7 * 0.35 is approx 25% for rest
+set.seed(246)
+inTest <- createDataPartition(y=rest$classe, p=0.7, list=FALSE)
+test <- rest[inTest,]
+validation <- rest[-inTest,]
+dim(buildData)
+dim(test)
+dim(validation)
+## drop column 1:5 which are row of data, subject and timestamps
+buildData <- buildData[,6:160]
+test <- test[,6:160]
+validation <- validation[,6:160]
+## Final test data - 20 rows 
+testingf <- testing[,6:160]
+## classe (y) is now in column 155
+```
+### Pre-Processing
+* Remove near vero variance variables (33 variables removed)
+* Center and scale the data
+* Perform imputation of missing values using k-nearest neighbor
+* Find and remove variables with correlations > 0.75 (47 additional variables removed)
+* 77 potential predictor variables remain in the data.
+
+```{r exploredata, cache=TRUE,  warning=FALSE}
+ table(buildData$classe)
+
+## Preprocessing: remove near-zero variance variables
+set.seed=(789)
+nsv <- nearZeroVar(buildData, uniqueCut = 10, freqCut = 95/5,  saveMetrics = TRUE)
+nzvar <- nsv$nzv
+nsv[nzvar,]
+
+## exclude near zero variance variables (123 columns remaining including classe)
+buildDatanz <- buildData[, !nzvar]
+testnz <- test[, !nzvar]
+validationnz <- validation[, !nzvar]
+testingfnz <- testingf[, !nzvar]
+dim(buildDatanz)
+dim(testnz)
+dim(validationnz)
+dim(testingfnz)
+
+## Imput missing data using knn impute (also will center and scale the data by default)
+set.seed(1234)
+preObjImp <- preProcess(buildDatanz[,-122],method="knnImpute")
+library(RANN)
+## variables are centered and standardized and missing values have been inputed
+buildDataPP <- predict(preObjImp,buildDatanz[,-122])
+testPP <- predict(preObjImp,testnz[,-122])
+validationPP <- predict(preObjImp, validationnz[,-122])
+testingfPP <- predict(preObjImp, testingfnz[,-122])
+
+## append classe variable to transformed x variables
+buildDataPP <- cbind(buildDataPP, classe=buildDatanz$classe)
+testPP <- cbind(testPP, classe=testnz$classe)
+validationPP <- cbind(validationPP, classe=validationnz$classe)
+testingfPP <- cbind(testingfPP, problem_id=testingfnz$problem_id)
+dim(buildDataPP)
+dim(testPP)
+dim(validationPP)
+dim(testingfPP)
+
+correl <- cor(buildDataPP[,-122])
+set.seed(123)
+corrvars <- findCorrelation(correl, cutoff=0.75, verbose=FALSE, names=FALSE, exact=TRUE)
+buildDataCo <-  buildDataPP[,-corrvars]
+testCo <- testPP[,-corrvars]
+validationCo <- validationPP[,-corrvars]
+testingfCo <- testingfPP[,-corrvars]
+dim(buildDataCo)
+dim(testCo)
+dim(validationCo)
+dim(testingfCo)
+
+```
+
+## Fit classification tree model
+* Using 5-Fold Cross-validation to train this model.
+* Model results in accuracy of .564 in the training data.
+
+```{r treemod2, cache=TRUE, warning=FALSE}
+fitControl <- trainControl(## 5-fold CV
+                           method = "repeatedcv",
+                           number = 5,
+                           ## repeated ten times
+                           repeats = 5)
+set.seed(246)
+ctreeFit2 <- train(classe ~ .,
+                  method="rpart",
+                  trControl = fitControl,
+                  data=buildDataCo)
+print(ctreeFit2$finalModel)
+
+library(rattle)
+fancyRpartPlot(ctreeFit2$finalModel)
+
+buildprTRP2 <- predict(ctreeFit2,newdata=buildDataCo)
+confusionMatrix(buildprTRP2, buildDataCo$classe)
+## accuracy on training .564  vs. no information rate of .2843
+
+
+
+```
+### Fit Random Forest Model
+* Using the default 25 boostrapped samples to train this model.
+* The accuracy on the training data is over 99%.
+* Potential for overfitting on the training data
+
+```{r randomforest,  cache=TRUE,  warning=FALSE}
+set.seed(359)
+rfFit <- train(classe~ .,
+               data=buildDataCo,
+               method="rf",
+               prox=TRUE)
+
+
+print(rfFit)
+
+buildprrf <- predict(rfFit,newdata=buildDataCo)
+confusionMatrix(buildprrf, buildDataCo$classe)
+
+```
+### Build Gradiant Boosting Model
+* Using the default 25 boostrapped samples to train this model.
+* The accuracy on the training data is over 99%.
+* Potential for overfitting on the training data
+```{r boosting,  cache=TRUE,  warning=FALSE}
+set.seed(246)
+boostFit <- train(classe ~ ., method="gbm",data=buildDataCo,verbose=FALSE)
+print(boostFit)
+
+buildprBO <- predict(boostFit,newdata=buildDataCo)
+confusionMatrix(buildprBO, buildDataCo$classe)
+boostFit$finalModel
+boostFit$coefnames
+## Accuracy .9938 on training set
+```
+### Fit Linear Discrimant Analysis Model
+* Pre-processing with Principal Components Analysis
+* Some of the variables appear to be colinear.
+* Model Accuracy on training data is .567.
+```{r LDAModel,  cache=TRUE,  warning=FALSE}
+set.seed(0929)
+ldaFit <- train(classe ~ ., method="lda",preProcess="pca",data=buildDataCo)
+print(ldaFit)
+
+buildprlda <- predict(ldaFit,newdata=buildDataCo)
+confusionMatrix(buildprlda, buildDataCo$classe)
+
+```
+
+```{r fitsummary, echo=FALSE, warnings=FALSE, cache=TRUE}
+library(caret)
+fitsummary <- rbind(round(confusionMatrix(buildprTRP2, buildDataCo$classe)$overall,4),
+round(confusionMatrix(buildprrf, buildDataCo$classe)$overall,4),
+round(confusionMatrix(buildprBO, buildDataCo$classe)$overall,4),
+round(confusionMatrix(buildprlda, buildDataCo$classe)$overall,4))
+fitnames <- c('CTree', 'Random Forest','gbm','LDA')
+fitsummary2 <- as.data.frame(cbind(fitnames,fitsummary))
+ggplot(fitsummary2, aes(fitnames,Accuracy)) + geom_point() + ggtitle("                                Accuracy on Training Data")
+```
+
+### Select a Model
+
+* Create predictions for each of the four models on the testing data
+* Train a model using the testing data to combine / stack the 4 models.
+* Create predictios on the combined model using the validation data.
+* Evaluate model using validation data.
+* The random forest model has the highest accuracy on both the training and test data.
+
+```{r selectmod, echo=FALSE, warning=FALSE}
+predtree <- predict(ctreeFit2,newdata=testCo)
+predrf <- predict(rfFit,newdata=testCo)
+predBO <- predict(boostFit,newdata=testCo)
+predlda <- predict(ldaFit,newdata=testCo)
+fitsummary <- rbind(round(confusionMatrix(predtree, testCo$classe)$overall,4),
+round(confusionMatrix(predrf, testCo$classe)$overall,4),
+round(confusionMatrix(predBO, testCo$classe)$overall,4),
+round(confusionMatrix(predlda, testCo$classe)$overall,4))
+fitnames <- c('CTree', 'Random Forest','gbm','LDA')
+fitsummary2 <- as.data.frame(cbind(fitnames,fitsummary))
+ggplot(fitsummary2, aes(fitnames,Accuracy)) + geom_point() + ggtitle("                                Accuracy on Testing Data")
+```
+### Evaluate Accuracy using validation data
+```{r validation, echo=FALSE}
+
+predrfv <- predict(rfFit,newdata=validationCo)
+round(confusionMatrix(predrfv, validationCo$classe)$overall,4)
+
+```
